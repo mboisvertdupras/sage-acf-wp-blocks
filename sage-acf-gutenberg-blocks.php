@@ -15,11 +15,7 @@ if (! function_exists('add_action')) {
 
 // Add the default blocks location, 'views/blocks', via filter
 add_filter('sage-acf-gutenberg-blocks-templates', function () {
-    $blocksDir = 'views/blocks';
-    if (isSage10()) {
-        $blocksDir = "resources/$blocksDir";
-    }
-    return array($blocksDir);
+    return ['views/blocks'];
 });
 
 /**
@@ -34,18 +30,19 @@ add_action('acf/init', function () {
     $directories = apply_filters('sage-acf-gutenberg-blocks-templates', []);
 
     // Check whether ACF exists before continuing
-    foreach ($directories as $dir) {
+    foreach ($directories as $directory) {
+        $dir = isSage10() ? \Roots\resource_path($directory) : \locate_template($directory);
+
         // Sanity check whether the directory we're iterating over exists first
-        if (!file_exists(\locate_template($dir))) {
+        if (!file_exists($dir)) {
             return;
         }
 
         // Iterate over the directories provided and look for templates
-        $template_directory = new \DirectoryIterator(\locate_template($dir));
+        $template_directory = new \DirectoryIterator($dir);
 
         foreach ($template_directory as $template) {
             if (!$template->isDot() && !$template->isDir()) {
-
                 // Strip the file extension to get the slug
                 $slug = removeBladeExtension($template->getFilename());
                 // If there is no slug (most likely because the filename does
@@ -55,7 +52,8 @@ add_action('acf/init', function () {
                 }
 
                 // Get header info from the found template file(s)
-                $file_path = locate_template($dir."/${slug}.blade.php");
+                $file = "${dir}/${slug}.blade.php";
+                $file_path = file_exists($file) ? $file : '';
                 $file_headers = get_file_data($file_path, [
                     'title' => 'Title',
                     'description' => 'Description',
@@ -68,6 +66,9 @@ add_action('acf/init', function () {
                     'supports_align' => 'SupportsAlign',
                     'supports_anchor' => 'SupportsAnchor',
                     'supports_mode' => 'SupportsMode',
+                    'supports_jsx' => 'SupportsInnerBlocks',
+                    'supports_align_text' => 'SupportsAlignText',
+                    'supports_align_content' => 'SupportsAlignContent',
                     'supports_multiple' => 'SupportsMultiple',
                     'enqueue_style'     => 'EnqueueStyle',
                     'enqueue_script'    => 'EnqueueScript',
@@ -105,6 +106,11 @@ add_action('acf/init', function () {
                     'enqueue_style'   => $file_headers['enqueue_style'],
                     'enqueue_script'  => $file_headers['enqueue_script'],
                     'enqueue_assets'  => $file_headers['enqueue_assets'],
+                    'example'  => array(
+                        'attributes' => array(
+                            'mode' => 'preview',
+                        )
+                    )
                 ];
 
                 // If the PostTypes header is set in the template, restrict this block to those types
@@ -127,13 +133,28 @@ add_action('acf/init', function () {
                     $data['supports']['mode'] = $file_headers['supports_mode'] === 'true' ? true : false;
                 }
 
+                // If the SupportsInnerBlocks header is set in the template, restrict this block mode feature
+                if (!empty($file_headers['supports_jsx'])) {
+                    $data['supports']['jsx'] = $file_headers['supports_jsx'] === 'true' ? true : false;
+                }
+
+                // If the SupportsAlignText header is set in the template, restrict this block mode feature
+                if (!empty($file_headers['supports_align_text'])) {
+                    $data['supports']['align_text'] = $file_headers['supports_align_text'] === 'true' ? true : false;
+                }
+
+                // If the SupportsAlignContent header is set in the template, restrict this block mode feature
+                if (!empty($file_headers['supports_align_text'])) {
+                    $data['supports']['align_content'] = $file_headers['supports_align_content'] === 'true' ? true : false;
+                }
+
                 // If the SupportsMultiple header is set in the template, restrict this block multiple feature
                 if (!empty($file_headers['supports_multiple'])) {
                     $data['supports']['multiple'] = $file_headers['supports_multiple'] === 'true' ? true : false;
                 }
 
                 // Register the block with ACF
-                \acf_register_block_type($data);
+                \acf_register_block_type(apply_filters("sage/blocks/$slug/register-data", $data));
             }
         }
     }
@@ -144,7 +165,6 @@ add_action('acf/init', function () {
  */
 function sage_blocks_callback($block, $content = '', $is_preview = false, $post_id = 0)
 {
-
     // Set up the slug to be useful
     $slug  = str_replace('acf/', '', $block['name']);
     $block = array_merge(['className' => ''], $block);
@@ -154,6 +174,7 @@ function sage_blocks_callback($block, $content = '', $is_preview = false, $post_
     $block['is_preview'] = $is_preview;
     $block['content'] = $content;
     $block['slug'] = $slug;
+    $block['anchor'] = isset($block['anchor']) ? $block['anchor'] : '';
     // Send classes as array to filter for easy manipulation.
     $block['classes'] = [
         $slug,
@@ -168,12 +189,20 @@ function sage_blocks_callback($block, $content = '', $is_preview = false, $post_
     // Join up the classes.
     $block['classes'] = implode(' ', array_filter($block['classes']));
 
-    if (isSage10()) {
-        // Use Sage's view() function to echo the block and populate it with data
-        echo \Roots\view("blocks/${slug}", ['block' => $block]);
-    } else {
-        // Use Sage 9's template() function to echo the block and populate it with data
-        echo \App\template("blocks/${slug}", ['block' => $block]);
+    // Get the template directories.
+    $directories = apply_filters('sage-acf-gutenberg-blocks-templates', []);
+
+    foreach ($directories as $directory) {
+        $view = ltrim($directory, 'views/') . '/' . $slug;
+
+        if (isSage10()) {
+            if (\Roots\view()->exists($view)) {
+                // Use Sage's view() function to echo the block and populate it with data
+                echo \Roots\view($view, ['block' => $block]);
+            }
+        } else {
+            echo \App\template(locate_template("${directory}/${slug}"), ['block' => $block]);
+        }
     }
 }
 
@@ -190,7 +219,7 @@ function removeBladeExtension($filename)
         return $matches[1];
     }
     // Return FALSE if the filename doesn't match the pattern.
-    return FALSE;
+    return false;
 }
 
 /**
